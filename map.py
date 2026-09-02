@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -28,6 +29,12 @@ CARTO_POSITRON_STYLE = (
     "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 )
 
+# Fixed map center: Princeton University / Nassau Hall area.
+PRINCETON_LATITUDE = 40.3487
+PRINCETON_LONGITUDE = -74.6593
+MAP_RADIUS_MILES = 15
+PRINCETON_ORANGE_RGB = [238, 127, 45]
+
 # Princeton / Office of Innovation-inspired palette.
 PRINCETON_ORANGE = "#EE7F2D"
 PRINCETON_ORANGE_DARK = "#C95B12"
@@ -48,8 +55,8 @@ CATEGORY_COLORS = {
     "Coworking": [0, 119, 139],
     "Wet/Dry Lab": [91, 135, 74],
     "Prototyping": [126, 84, 164],
-    "Prototyping (Accelerator-members Only)": [238, 127, 45],
-    "Coworking (Accelerator-members Only)": [238, 127, 45],
+    "Prototyping (Accelerator-members Only)": [214, 51, 132],
+    "Coworking (Accelerator-members Only)": [190, 30, 45],
     "Research Core Facility": [238, 127, 45],
 }
 
@@ -102,7 +109,6 @@ def inject_innovation_theme() -> None:
                 background: rgba(252, 252, 251, 0.95);
             }}
 
-            /* Left filter panel */
             [data-testid="stSidebar"] {{
                 background-color: var(--sidebar-dark-gray);
                 border-right: 1px solid var(--sidebar-darker-gray);
@@ -134,7 +140,6 @@ def inject_innovation_theme() -> None:
                 border-color: var(--white);
             }}
 
-            /* Selected Multiselect category tags */
             [data-testid="stSidebar"] [data-baseweb="tag"] {{
                 background-color: var(--princeton-orange) !important;
                 border-color: var(--princeton-orange) !important;
@@ -147,7 +152,6 @@ def inject_innovation_theme() -> None:
                 fill: var(--ink) !important;
             }}
 
-            /* Sidebar sliders and checkboxes */
             [data-testid="stSidebar"] [data-baseweb="slider"]
             div[role="slider"] {{
                 background-color: var(--princeton-orange) !important;
@@ -222,16 +226,6 @@ def inject_innovation_theme() -> None:
                 -webkit-text-fill-color: var(--white) !important;
             }}
 
-            button[kind="primary"]:focus,
-            button[kind="secondary"]:focus {{
-                outline: 3px solid var(--princeton-orange-light) !important;
-                outline-offset: 2px !important;
-            }}
-
-            /*
-            Resource detail actions use ordinary HTML anchors rather than
-            st.link_button(), ensuring visible text in every Streamlit version.
-            */
             .resource-action-button {{
                 display: block;
                 width: 100%;
@@ -258,12 +252,6 @@ def inject_innovation_theme() -> None:
                 text-decoration: none !important;
             }}
 
-            .resource-action-button:focus {{
-                outline: 3px solid var(--princeton-orange-light);
-                outline-offset: 2px;
-            }}
-
-            /* Explicit tab styling keeps inactive labels visible. */
             .stTabs [data-baseweb="tab-list"] {{
                 gap: 1.5rem;
                 border-bottom: 1px solid var(--light-gray);
@@ -301,9 +289,7 @@ def inject_innovation_theme() -> None:
             .stTabs [data-baseweb="tab"]:hover span,
             .stTabs [data-baseweb="tab"]:hover p {{
                 color: var(--princeton-orange-dark) !important;
-                -webkit-text-fill-color: var(
-                    --princeton-orange-dark
-                ) !important;
+                -webkit-text-fill-color: var(--princeton-orange-dark) !important;
             }}
 
             .stTabs button[role="tab"][aria-selected="true"],
@@ -317,9 +303,7 @@ def inject_innovation_theme() -> None:
             .stTabs [data-baseweb="tab"][aria-selected="true"] span,
             .stTabs [data-baseweb="tab"][aria-selected="true"] p {{
                 color: var(--princeton-orange-dark) !important;
-                -webkit-text-fill-color: var(
-                    --princeton-orange-dark
-                ) !important;
+                -webkit-text-fill-color: var(--princeton-orange-dark) !important;
                 font-weight: 750 !important;
             }}
 
@@ -336,12 +320,7 @@ def inject_innovation_theme() -> None:
                 color: var(--ink);
             }}
 
-            [data-testid="stDataFrame"] {{
-                background: var(--white);
-                border: 1px solid var(--light-gray);
-                border-radius: 3px;
-            }}
-
+            [data-testid="stDataFrame"],
             [data-testid="stExpander"] {{
                 background: var(--white);
                 border: 1px solid var(--light-gray);
@@ -365,14 +344,12 @@ def clean_text(value: object) -> str:
     """Return a clean string, including for blank and missing cells."""
     if pd.isna(value):
         return ""
-
     return " ".join(str(value).replace("\xa0", " ").split())
 
 
 def extract_first_url(value: object) -> str:
     """Return the first usable URL in a potentially mixed-text cell."""
     text = clean_text(value)
-
     match = re.search(
         r"(https?://[^\s,;]+|www\.[^\s,;]+)",
         text,
@@ -383,10 +360,8 @@ def extract_first_url(value: object) -> str:
         return ""
 
     url = match.group(1).rstrip(".,);]}>")
-
     if url.lower().startswith("www."):
         url = f"https://{url}"
-
     return url
 
 
@@ -402,13 +377,10 @@ def classify_affiliation(note: object) -> str:
 
     if not text or "needs outreach" in text:
         return "Needs outreach"
-
     if any(term in text for term in ["yes", "potential", "princeton faculty"]):
         return "Potential / confirmed"
-
     if any(term in text for term in ["n/a", "not applicable"]):
         return "Not applicable"
-
     return "Unclear"
 
 
@@ -418,16 +390,12 @@ def classify_program_status(note: object) -> str:
 
     if not text:
         return "No information"
-
     if "nj ignite-approved" in text or "nj ignite approved" in text:
         return "NJ Ignite approved"
-
     if "strategic innovation center" in text:
         return "Strategic Innovation Center"
-
     if any(term in text for term in ["accelerator", "incubator", "cohort"]):
         return "Accelerator / incubator"
-
     if any(
         term in text
         for term in [
@@ -438,16 +406,12 @@ def classify_program_status(note: object) -> str:
         ]
     ):
         return "No formal program"
-
     return "Other / needs review"
 
 
 def category_color(category: object) -> list[int]:
     """Map each resource category to its marker RGB color."""
-    return CATEGORY_COLORS.get(
-        clean_text(category),
-        DEFAULT_MARKER_COLOR,
-    )
+    return CATEGORY_COLORS.get(clean_text(category), DEFAULT_MARKER_COLOR)
 
 
 def google_maps_url(address: object) -> str:
@@ -458,6 +422,45 @@ def google_maps_url(address: object) -> str:
     )
 
 
+def radius_circle_coordinates(
+    center_latitude: float,
+    center_longitude: float,
+    radius_miles: float,
+    points: int = 180,
+) -> list[list[float]]:
+    """Create longitude/latitude coordinates for a geodesic circle."""
+    earth_radius_miles = 3958.7613
+    angular_distance = radius_miles / earth_radius_miles
+    center_latitude_radians = math.radians(center_latitude)
+    center_longitude_radians = math.radians(center_longitude)
+    coordinates = []
+
+    for point_index in range(points + 1):
+        bearing = 2 * math.pi * point_index / points
+        latitude_radians = math.asin(
+            math.sin(center_latitude_radians) * math.cos(angular_distance)
+            + math.cos(center_latitude_radians)
+            * math.sin(angular_distance)
+            * math.cos(bearing)
+        )
+        longitude_radians = center_longitude_radians + math.atan2(
+            math.sin(bearing)
+            * math.sin(angular_distance)
+            * math.cos(center_latitude_radians),
+            math.cos(angular_distance)
+            - math.sin(center_latitude_radians)
+            * math.sin(latitude_radians),
+        )
+        coordinates.append(
+            [
+                math.degrees(longitude_radians),
+                math.degrees(latitude_radians),
+            ]
+        )
+
+    return coordinates
+
+
 # -----------------------------------------------------------------------------
 # Data loading
 # -----------------------------------------------------------------------------
@@ -465,12 +468,7 @@ def google_maps_url(address: object) -> str:
 
 @st.cache_data
 def load_assets(csv_path: str) -> pd.DataFrame:
-    """
-    Load the coordinate-enabled asset CSV.
-
-    Try UTF-8 first, then Windows-1252 for CSVs saved by Excel or containing
-    Windows smart punctuation such as curly apostrophes and quotation marks.
-    """
+    """Load the asset CSV with UTF-8 and Windows-1252 compatibility."""
     read_options = {
         "dtype": str,
         "keep_default_na": False,
@@ -507,26 +505,15 @@ def load_assets(csv_path: str) -> pd.DataFrame:
         )
     ].copy()
 
-    df["Latitude"] = pd.to_numeric(
-        df["Latitude"],
-        errors="coerce",
+    df["Latitude"] = pd.to_numeric(df["Latitude"], errors="coerce")
+    df["Longitude"] = pd.to_numeric(df["Longitude"], errors="coerce")
+    df["Distance (mi)"] = df["Distance from Princeton U (mi)"].map(
+        extract_distance
     )
-
-    df["Longitude"] = pd.to_numeric(
-        df["Longitude"],
-        errors="coerce",
-    )
-
-    df["Distance (mi)"] = df[
-        "Distance from Princeton U (mi)"
-    ].map(extract_distance)
-
     df["Website URL"] = df["More Info / Website"].map(extract_first_url)
-
     df["Affiliation Status"] = df[
         "Princeton Affiliation Discount?"
     ].map(classify_affiliation)
-
     df["Program Status"] = df[
         "Accelerator / Incubator Program & NJEDA Recognition"
     ].map(classify_program_status)
@@ -561,52 +548,87 @@ def load_assets(csv_path: str) -> pd.DataFrame:
 
 
 def render_map(filtered_assets: pd.DataFrame) -> None:
-    """Render a CARTO basemap with category-colored resource markers."""
-    mapped = filtered_assets.dropna(
-        subset=["Latitude", "Longitude"]
-    ).copy()
+    """Render a map centered on Princeton University with a 15-mile ring."""
+    mapped = filtered_assets.dropna(subset=["Latitude", "Longitude"]).copy()
 
-    if mapped.empty:
-        st.warning(
-            "No mapped records match the current filters. Check that the "
-            "CSV contains numeric Latitude and Longitude values."
-        )
-        return
-
-    mapped["marker_color"] = mapped["Category"].apply(category_color)
-    mapped["maps_url"] = mapped["Address"].apply(google_maps_url)
-
-    mapped["distance_display"] = mapped["Distance (mi)"].apply(
-        lambda value: (
-            f"{value:.1f} miles"
+    if not mapped.empty:
+        mapped["marker_color"] = mapped["Category"].apply(category_color)
+        mapped["maps_url"] = mapped["Address"].apply(google_maps_url)
+        mapped["distance_display"] = mapped["Distance (mi)"].apply(
+            lambda value: f"{value:.1f} miles"
             if pd.notna(value)
             else "Not listed"
         )
+
+    circle_coordinates = radius_circle_coordinates(
+        center_latitude=PRINCETON_LATITUDE,
+        center_longitude=PRINCETON_LONGITUDE,
+        radius_miles=MAP_RADIUS_MILES,
     )
 
-    center_latitude = mapped["Latitude"].mean()
-    center_longitude = mapped["Longitude"].mean()
+    ring_data = pd.DataFrame(
+        [
+            {
+                "start": circle_coordinates[index],
+                "end": circle_coordinates[index + 1],
+            }
+            for index in range(len(circle_coordinates) - 1)
+        ]
+    )
 
-    if len(mapped) == 1:
-        zoom = 12
-    elif len(mapped) <= 5:
-        zoom = 10
-    else:
-        zoom = 9
+    university_data = pd.DataFrame(
+        [
+            {
+                "name": "Princeton University",
+                "longitude": PRINCETON_LONGITUDE,
+                "latitude": PRINCETON_LATITUDE,
+            }
+        ]
+    )
 
-    marker_layer = pdk.Layer(
+    radius_layer = pdk.Layer(
+        "GreatCircleLayer",
+        data=ring_data,
+        get_source_position="start",
+        get_target_position="end",
+        get_source_color=PRINCETON_ORANGE_RGB,
+        get_target_color=PRINCETON_ORANGE_RGB,
+        get_width=2,
+        width_min_pixels=1,
+        pickable=False,
+    )
+
+    university_layer = pdk.Layer(
         "ScatterplotLayer",
-        data=mapped,
-        get_position="[Longitude, Latitude]",
-        get_fill_color="marker_color",
-        get_radius=280,
+        data=university_data,
+        get_position="[longitude, latitude]",
+        get_fill_color=[29, 29, 27],
+        get_radius=375,
         radius_min_pixels=8,
-        radius_max_pixels=24,
+        radius_max_pixels=16,
         pickable=True,
         stroked=True,
         get_line_color=[255, 255, 255],
-        line_width_min_pixels=1,
+        line_width_min_pixels=2,
     )
+
+    layers = [radius_layer, university_layer]
+
+    if not mapped.empty:
+        marker_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=mapped,
+            get_position="[Longitude, Latitude]",
+            get_fill_color="marker_color",
+            get_radius=280,
+            radius_min_pixels=8,
+            radius_max_pixels=24,
+            pickable=True,
+            stroked=True,
+            get_line_color=[255, 255, 255],
+            line_width_min_pixels=1,
+        )
+        layers.append(marker_layer)
 
     tooltip = {
         "html": """
@@ -626,11 +648,11 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
     }
 
     deck = pdk.Deck(
-        layers=[marker_layer],
+        layers=layers,
         initial_view_state=pdk.ViewState(
-            latitude=center_latitude,
-            longitude=center_longitude,
-            zoom=zoom,
+            latitude=PRINCETON_LATITUDE,
+            longitude=PRINCETON_LONGITUDE,
+            zoom=9.2,
             pitch=0,
         ),
         map_provider="carto",
@@ -638,11 +660,13 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
         tooltip=tooltip,
     )
 
-    st.pydeck_chart(
-        deck,
-        use_container_width=True,
-        height=650,
-    )
+    st.pydeck_chart(deck, use_container_width=True, height=650)
+
+    if mapped.empty:
+        st.info(
+            "No mapped facilities match the current filters. The map remains "
+            "centered on Princeton University and shows the 15-mile radius."
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -670,11 +694,9 @@ st.caption(
     "and incubator resources in the Princeton-area innovation ecosystem."
 )
 
-# Sidebar filters
 st.sidebar.header("Directory filters")
 
 categories = sorted(assets["Category"].dropna().unique().tolist())
-
 selected_categories = st.sidebar.multiselect(
     "Space category",
     options=categories,
@@ -682,11 +704,8 @@ selected_categories = st.sidebar.multiselect(
 )
 
 valid_distances = assets["Distance (mi)"].dropna()
-
 maximum_distance = (
-    float(valid_distances.max())
-    if not valid_distances.empty
-    else 15.0
+    float(valid_distances.max()) if not valid_distances.empty else 15.0
 )
 
 selected_distance = st.sidebar.slider(
@@ -702,7 +721,6 @@ affiliation_options = [
     "All",
     *sorted(assets["Affiliation Status"].dropna().unique().tolist()),
 ]
-
 selected_affiliation = st.sidebar.selectbox(
     "Princeton-affiliation",
     options=affiliation_options,
@@ -712,7 +730,6 @@ program_options = [
     "All",
     *sorted(assets["Program Status"].dropna().unique().tolist()),
 ]
-
 selected_program = st.sidebar.selectbox(
     "NJEDA recognition",
     options=program_options,
@@ -728,13 +745,10 @@ show_unknown_distance = st.sidebar.checkbox(
     value=True,
 )
 
-# Apply filters
 filtered = assets.copy()
 
 if selected_categories:
-    filtered = filtered[
-        filtered["Category"].isin(selected_categories)
-    ]
+    filtered = filtered[filtered["Category"].isin(selected_categories)]
 
 if show_unknown_distance:
     filtered = filtered[
@@ -753,9 +767,7 @@ if selected_affiliation != "All":
     ]
 
 if selected_program != "All":
-    filtered = filtered[
-        filtered["Program Status"] == selected_program
-    ]
+    filtered = filtered[filtered["Program Status"] == selected_program]
 
 if search_term.strip():
     filtered = filtered[
@@ -772,49 +784,37 @@ filtered = filtered.sort_values(
     na_position="last",
 ).reset_index(drop=True)
 
-# Metrics
 matching_assets = len(filtered)
-mapped_locations = int(
-    filtered[["Latitude", "Longitude"]].dropna().shape[0]
-)
-within_five_miles = int(
-    (filtered["Distance (mi)"] <= 5).sum()
-)
+mapped_locations = int(filtered[["Latitude", "Longitude"]].dropna().shape[0])
+within_five_miles = int((filtered["Distance (mi)"] <= 5).sum())
 research_core_facilities = int(
     (filtered["Category"] == "Research Core Facility").sum()
 )
 
 metric_1, metric_2, metric_3, metric_4 = st.columns(4)
-
 metric_1.metric("Matching resources", matching_assets)
 metric_2.metric("Mapped locations", mapped_locations)
 metric_3.metric("Within 5 miles", within_five_miles)
 metric_4.metric("Research core facilities", research_core_facilities)
 
 tab_map, tab_directory, tab_detail, tab_export = st.tabs(
-    [
-        "Map",
-        "Directory list",
-        "Resource detail",
-        "Export list",
-    ]
+    ["Map", "Directory list", "Resource detail", "Export list"]
 )
 
 with tab_map:
     st.subheader("Innovation resource map")
     st.caption(
-        "Hover over a marker for details. Each marker includes a link to "
-        "open the recorded address in Google Maps."
+        "The map is centered on Princeton University. The thin Princeton "
+        "Orange ring marks a 15-mile radius; hover over a facility marker "
+        "for details."
     )
 
     legend_columns = st.columns(len(CATEGORY_COLORS))
-
     for column, (category, color) in zip(
         legend_columns,
         CATEGORY_COLORS.items(),
     ):
         color_css = f"rgb({color[0]}, {color[1]}, {color[2]})"
-
         column.markdown(
             f"<span style='color:{color_css}; font-size:18px;'>●</span> "
             f"{category}",
@@ -824,27 +824,16 @@ with tab_map:
     render_map(filtered)
 
     unmapped = filtered[
-        filtered["Latitude"].isna()
-        | filtered["Longitude"].isna()
+        filtered["Latitude"].isna() | filtered["Longitude"].isna()
     ]
-
     if not unmapped.empty:
-        with st.expander(
-            f"{len(unmapped)} record(s) lack map coordinates"
-        ):
+        with st.expander(f"{len(unmapped)} record(s) lack map coordinates"):
             st.write(
                 "Add numeric Latitude and Longitude values to these rows in "
                 "the CSV. No code edit is required."
             )
-
             st.dataframe(
-                unmapped[
-                    [
-                        "Organization Name",
-                        "Address",
-                        "Category",
-                    ]
-                ],
+                unmapped[["Organization Name", "Address", "Category"]],
                 use_container_width=True,
                 hide_index=True,
             )
@@ -891,7 +880,6 @@ with tab_detail:
             "Select a resource",
             options=filtered["Organization Name"].tolist(),
         )
-
         asset = filtered.loc[
             filtered["Organization Name"] == selected_name
         ].iloc[0]
@@ -909,16 +897,10 @@ with tab_detail:
                     f"{asset['Distance (mi)']:.1f} miles"
                 )
             else:
-                st.write(
-                    "**Distance from Princeton University:** Not listed"
-                )
+                st.write("**Distance from Princeton University:** Not listed")
 
             if asset["Website URL"]:
-                website_url = html.escape(
-                    asset["Website URL"],
-                    quote=True,
-                )
-
+                website_url = html.escape(asset["Website URL"], quote=True)
                 st.markdown(
                     f"""
                     <a class="resource-action-button"
@@ -936,7 +918,6 @@ with tab_detail:
                     google_maps_url(asset["Address"]),
                     quote=True,
                 )
-
                 st.markdown(
                     f"""
                     <a class="resource-action-button"
@@ -957,9 +938,7 @@ with tab_detail:
                 f"{asset['Published Price'] or 'Not listed'}"
             )
 
-            st.markdown(
-                "### Princeton University affiliation or discounts"
-            )
+            st.markdown("### Princeton University affiliation or discounts")
             st.write(
                 asset["Princeton Affiliation Discount?"] or "Needs review"
             )
