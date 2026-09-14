@@ -33,7 +33,7 @@ CARTO_POSITRON_STYLE = (
 PRINCETON_LATITUDE = 40.3487
 PRINCETON_LONGITUDE = -74.6593
 MAP_RADIUS_MILES = 15
-PRINCETON_ORANGE_RGB = [238, 127, 45]
+MAP_INITIAL_ZOOM = 10.2
 
 # Princeton / Office of Innovation-inspired palette.
 PRINCETON_ORANGE = "#EE7F2D"
@@ -50,6 +50,7 @@ WHITE = "#FFFFFF"
 
 # Map-marker colors are RGB lists for PyDeck.
 DEFAULT_MARKER_COLOR = [100, 100, 100]
+PRINCETON_ORANGE_RGB = [238, 127, 45]
 
 CATEGORY_COLORS = {
     "Coworking": [0, 119, 139],
@@ -309,6 +310,58 @@ def inject_innovation_theme() -> None:
 
             .stTabs [data-baseweb="tab-highlight"] {{
                 background-color: var(--princeton-orange) !important;
+            }}
+
+            /*
+            Sidebar controls: explicit normal-state styling for both the
+            collapsed-sidebar >> button and open-sidebar << button.
+            */
+            [data-testid="stSidebarCollapsedControl"],
+            [data-testid="stSidebarCollapsedControl"] button {{
+                background-color: var(--princeton-orange-light) !important;
+                border: 1px solid var(--princeton-orange) !important;
+                border-radius: 0.35rem !important;
+                color: var(--princeton-orange) !important;
+                opacity: 1 !important;
+            }}
+
+            [data-testid="stSidebarCollapsedControl"] > div,
+            [data-testid="stSidebarCollapsedControl"] > div > button,
+            [data-testid="stSidebarCollapsedControl"] > div > button > div,
+            [data-testid="stSidebarCollapsedControl"] > div > button span,
+            [data-testid="stSidebarCollapsedControl"] > div > button svg,
+            [data-testid="stSidebarCollapsedControl"] > div > button svg path,
+            [data-testid="stSidebarCollapsedControl"] button *,
+            [data-testid="stSidebarCollapsedControl"] button svg,
+            [data-testid="stSidebarCollapsedControl"] button svg path {{
+                color: var(--princeton-orange) !important;
+                fill: var(--princeton-orange) !important;
+                stroke: var(--princeton-orange) !important;
+                -webkit-text-fill-color: var(--princeton-orange) !important;
+                opacity: 1 !important;
+            }}
+
+            [data-testid="stSidebar"] button[kind="header"],
+            [data-testid="stSidebar"] button[kind="header"] * {{
+                color: var(--princeton-orange) !important;
+                fill: var(--princeton-orange) !important;
+                stroke: var(--princeton-orange) !important;
+                -webkit-text-fill-color: var(--princeton-orange) !important;
+                opacity: 1 !important;
+            }}
+
+            [data-testid="stSidebarCollapsedControl"]:hover,
+            [data-testid="stSidebarCollapsedControl"] button:hover {{
+                background-color: var(--princeton-orange) !important;
+                border-color: var(--princeton-orange-dark) !important;
+            }}
+
+            [data-testid="stSidebarCollapsedControl"]:hover *,
+            [data-testid="stSidebarCollapsedControl"] button:hover * {{
+                color: var(--ink) !important;
+                fill: var(--ink) !important;
+                stroke: var(--ink) !important;
+                -webkit-text-fill-color: var(--ink) !important;
             }}
 
             a {{
@@ -652,7 +705,7 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
         initial_view_state=pdk.ViewState(
             latitude=PRINCETON_LATITUDE,
             longitude=PRINCETON_LONGITUDE,
-            zoom=9.2,
+            zoom=MAP_INITIAL_ZOOM,
             pitch=0,
         ),
         map_provider="carto",
@@ -804,7 +857,9 @@ tab_map, tab_directory, tab_detail, tab_export = st.tabs(
 with tab_map:
     st.subheader("Innovation resource map")
     st.caption(
-        "The map is centered on Princeton University with a 15-mile radius indicated by the marker"
+        "The map is centered on Princeton University. The thin Princeton "
+        "Orange ring marks a 15-mile radius; hover over a facility marker "
+        "for details."
     )
 
     legend_columns = st.columns(len(CATEGORY_COLORS))
@@ -986,3 +1041,4 @@ with tab_export:
             use_container_width=True,
             hide_index=True,
         )
+
