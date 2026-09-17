@@ -60,6 +60,7 @@ CATEGORY_COLORS = {
     "Coworking (Accelerator-members Only)": [190, 30, 45],
     "Research Core Facility": [238, 127, 45],
     "Innovation Center / Research Park": [255, 215, 0],
+    "Incubator / Accelerator": [128, 85, 44],
 }
 
 REQUIRED_COLUMNS = [
