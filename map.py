@@ -857,8 +857,8 @@ tab_map, tab_directory, tab_detail, tab_export = st.tabs(
 with tab_map:
     st.subheader("Innovation resource map")
     st.caption(
-        "The map is centered on Princeton University. The thin Princeton "
-        "Orange ring marks a 15-mile radius; hover over a facility marker "
+        "The map is centered on Princeton University with the "
+        "orange ring marking a 15-mile radius; hover over a facility marker "
         "for details."
     )
 
