@@ -59,6 +59,7 @@ CATEGORY_COLORS = {
     "Prototyping (Accelerator-members Only)": [214, 51, 132],
     "Coworking (Accelerator-members Only)": [190, 30, 45],
     "Research Core Facility": [238, 127, 45],
+    "Innovation Center / Research Park": [255, 215, 0],
 }
 
 REQUIRED_COLUMNS = [
@@ -68,8 +69,9 @@ REQUIRED_COLUMNS = [
     "Distance from Princeton U (mi)",
     "Space Type",
     "Published Price",
-    "Princeton Affiliation Discount?",
+    "Princeton Affiliation?",
     "More Info / Website",
+    "CSIT Vouchers Accepted?",
     "Accelerator / Incubator Program & NJEDA Recognition",
     "Latitude",
     "Longitude",
@@ -312,10 +314,6 @@ def inject_innovation_theme() -> None:
                 background-color: var(--princeton-orange) !important;
             }}
 
-            /*
-            Sidebar controls: explicit normal-state styling for both the
-            collapsed-sidebar >> button and open-sidebar << button.
-            */
             [data-testid="stSidebarCollapsedControl"],
             [data-testid="stSidebarCollapsedControl"] button {{
                 background-color: var(--princeton-orange-light) !important;
@@ -425,41 +423,37 @@ def extract_distance(value: object) -> float | None:
 
 
 def classify_affiliation(note: object) -> str:
-    """Turn detailed affiliation notes into concise dashboard filter values."""
-    text = clean_text(note).lower()
+    """
+    Convert descriptive Princeton Affiliation text into two filter values.
 
-    if not text or "needs outreach" in text:
-        return "Needs outreach"
-    if any(term in text for term in ["yes", "potential", "princeton faculty"]):
-        return "Potential / confirmed"
-    if any(term in text for term in ["n/a", "not applicable"]):
-        return "Not applicable"
-    return "Unclear"
+    Any entry beginning with "Yes" is classified as Yes.
+    N/A, None at this time, blanks, and all other text are grouped under
+    Not specified.
+    """
+    text = clean_text(note)
+    lower_text = text.lower()
+
+    if lower_text.startswith("yes"):
+        return "Yes"
+
+    return "Not specified"
 
 
 def classify_program_status(note: object) -> str:
-    """Turn detailed program notes into concise dashboard filter values."""
-    text = clean_text(note).lower()
+    """
+    Convert the descriptive NJEDA column into three filter values.
 
-    if not text:
-        return "No information"
-    if "nj ignite-approved" in text or "nj ignite approved" in text:
-        return "NJ Ignite approved"
-    if "strategic innovation center" in text:
-        return "Strategic Innovation Center"
-    if any(term in text for term in ["accelerator", "incubator", "cohort"]):
-        return "Accelerator / incubator"
-    if any(
-        term in text
-        for term in [
-            "no accelerator",
-            "not found on",
-            "no formal accelerator",
-            "no formal incubator",
-        ]
-    ):
-        return "No formal program"
-    return "Other / needs review"
+    - "Partial", "NJ Ignite", and "SIC" are grouped as Yes.
+    - "None" and "Not specified" are grouped as Not specified.
+    - Blank or unexpected values are also treated as Not specified.
+    """
+    text = clean_text(note)
+    lower_text = text.lower()
+
+    if lower_text.startswith(("partial", "nj ignite", "sic")):
+        return "Yes"
+
+    return "Not specified"
 
 
 def category_color(category: object) -> list[int]:
@@ -565,7 +559,7 @@ def load_assets(csv_path: str) -> pd.DataFrame:
     )
     df["Website URL"] = df["More Info / Website"].map(extract_first_url)
     df["Affiliation Status"] = df[
-        "Princeton Affiliation Discount?"
+        "Princeton Affiliation?"
     ].map(classify_affiliation)
     df["Program Status"] = df[
         "Accelerator / Incubator Program & NJEDA Recognition"
@@ -577,7 +571,8 @@ def load_assets(csv_path: str) -> pd.DataFrame:
         "Address",
         "Space Type",
         "Published Price",
-        "Princeton Affiliation Discount?",
+        "Princeton Affiliation?",
+        "CSIT Vouchers Accepted?",
         "Accelerator / Incubator Program & NJEDA Recognition",
     ]
 
@@ -689,6 +684,7 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
         <b>Category:</b> {Category}<br/>
         <b>Address:</b> {Address}<br/>
         <b>Distance:</b> {distance_display}<br/>
+        <b>CSIT vouchers:</b> {CSIT Vouchers Accepted?}<br/>
         <b>Program status:</b> {Program Status}<br/><br/>
         <a href="{maps_url}" target="_blank">Open in Google Maps</a>
         """,
@@ -772,25 +768,34 @@ selected_distance = st.sidebar.slider(
 
 affiliation_options = [
     "All",
-    *sorted(assets["Affiliation Status"].dropna().unique().tolist()),
+    "Yes",
+    "Not specified",
 ]
 selected_affiliation = st.sidebar.selectbox(
-    "Princeton-affiliation",
+    "Princeton-Affiliated Resource",
     options=affiliation_options,
 )
 
 program_options = [
     "All",
-    *sorted(assets["Program Status"].dropna().unique().tolist()),
+    "Yes",
+    "Not specified",
 ]
 selected_program = st.sidebar.selectbox(
-    "NJEDA recognition",
+    "NJEDA-Recognized Resource",
     options=program_options,
 )
 
 search_term = st.sidebar.text_input(
     "Keyword search",
     placeholder="e.g., wet lab, core facility, makerspace",
+)
+
+# This filter is intentionally placed immediately before the existing
+# "Include assets with no listed distance" checkbox and defaults to unchecked.
+limit_to_csit_vouchers = st.sidebar.checkbox(
+    "Limit to resources accepting CSIT Vouchers",
+    value=False,
 )
 
 show_unknown_distance = st.sidebar.checkbox(
@@ -802,6 +807,17 @@ filtered = assets.copy()
 
 if selected_categories:
     filtered = filtered[filtered["Category"].isin(selected_categories)]
+
+if limit_to_csit_vouchers:
+    # Treat any value that begins with "Yes" as voucher-accepting. This allows
+    # the CSV to contain values such as "Yes", "Yes — confirmed", or
+    # "Yes — confirm facility-specific applicability".
+    filtered = filtered[
+        filtered["CSIT Vouchers Accepted?"].str.strip().str.lower().str.startswith(
+            "yes",
+            na=False,
+        )
+    ]
 
 if show_unknown_distance:
     filtered = filtered[
@@ -902,6 +918,7 @@ with tab_directory:
         "Space Type",
         "Published Price",
         "Affiliation Status",
+        "CSIT Vouchers Accepted?",
         "Program Status",
         "Website URL",
     ]
@@ -921,6 +938,9 @@ with tab_directory:
             ),
             "Affiliation Status": st.column_config.TextColumn(
                 "Princeton University affiliation",
+            ),
+            "CSIT Vouchers Accepted?": st.column_config.TextColumn(
+                "CSIT vouchers",
             ),
         },
     )
@@ -993,10 +1013,15 @@ with tab_detail:
 
             st.markdown("### Princeton University affiliation or discounts")
             st.write(
-                asset["Princeton Affiliation Discount?"] or "Needs review"
+                asset["Princeton Affiliation?"] or "Needs review"
             )
 
-            st.markdown("### NJEDA recognition")
+            st.markdown("### CSIT vouchers")
+            st.write(
+                asset["CSIT Vouchers Accepted?"] or "Unknown — confirm directly"
+            )
+
+            st.markdown("### NJEDA recognized")
             st.write(
                 asset[
                     "Accelerator / Incubator Program & NJEDA Recognition"
@@ -1017,10 +1042,11 @@ with tab_export:
         "Distance (mi)",
         "Space Type",
         "Published Price",
-        "Princeton Affiliation Discount?",
+        "Princeton Affiliation?",
         "Affiliation Status",
         "More Info / Website",
         "Website URL",
+        "CSIT Vouchers Accepted?",
         "Accelerator / Incubator Program & NJEDA Recognition",
         "Program Status",
     ]
@@ -1041,4 +1067,3 @@ with tab_export:
             use_container_width=True,
             hide_index=True,
         )
-
