@@ -67,7 +67,7 @@ REQUIRED_COLUMNS = [
     "Category",
     "Organization Name",
     "Address",
-    "Distance from Princeton U (mi)",
+    "Status",
     "Space Type",
     "Published Price",
     "Princeton Affiliation?",
@@ -76,7 +76,43 @@ REQUIRED_COLUMNS = [
     "Accelerator / Incubator Program & NJEDA Recognition",
     "Latitude",
     "Longitude",
+    "Last Verified",
 ]
+
+# Optional legacy column. Distance is now calculated from Latitude/Longitude;
+# this column is only used for rows that have no coordinates.
+LEGACY_DISTANCE_COLUMN = "Distance from Princeton U (mi)"
+
+CSIT_HELP = (
+    "CSIT is the New Jersey Commission on Science, Innovation and Technology. "
+    "Its Innovation Vouchers help eligible companies pay for work at "
+    "approved facilities. Voucher acceptance is unconfirmed for most "
+    "listings, so this filter returns only resources confirmed as accepting."
+)
+NJEDA_HELP = (
+    "NJEDA is the New Jersey Economic Development Authority. 'Yes' means the "
+    "resource is an approved NJ Ignite workspace or an NJEDA Strategic "
+    "Innovation Center (SIC). Listings that only appear in NJEDA directories "
+    "without approval are not counted."
+)
+AFFILIATION_HELP = (
+    "'Yes' means a direct Princeton University connection, such as a "
+    "Princeton facility, a founding partnership, or a stated preference for "
+    "the Princeton community."
+)
+
+
+def stretch(render, *args, **kwargs):
+    """
+    Render a Streamlit element at full container width on any version.
+
+    Newer Streamlit versions use width="stretch"; older versions use
+    use_container_width=True. This tries the new form first.
+    """
+    try:
+        return render(*args, width="stretch", **kwargs)
+    except Exception:
+        return render(*args, use_container_width=True, **kwargs)
 
 
 # -----------------------------------------------------------------------------
@@ -183,6 +219,21 @@ def inject_innovation_theme() -> None:
 
             p, li {{
                 color: var(--dark-gray);
+            }}
+
+            /* Hover-help tooltips (the "?" icons). They open outside the
+               sidebar on a dark background, so the dark-gray paragraph rule
+               above made them unreadable. These selectors only match
+               Streamlit's help tooltips, not the map tooltip or page text. */
+            [data-testid="stTooltipContent"],
+            [data-testid="stTooltipContent"] p,
+            [data-testid="stTooltipContent"] li,
+            [data-testid="stTooltipContent"] span,
+            [data-baseweb="tooltip"] p,
+            [data-baseweb="tooltip"] li,
+            [data-baseweb="tooltip"] span {{
+                color: var(--white) !important;
+                -webkit-text-fill-color: var(--white) !important;
             }}
 
             [data-testid="stMetric"] {{
@@ -399,6 +450,17 @@ def clean_text(value: object) -> str:
     return " ".join(str(value).replace("\xa0", " ").split())
 
 
+def md(value: object) -> str:
+    """
+    Make data text safe to display with st.write / st.markdown.
+
+    Streamlit treats text as Markdown, so "$300 ... $500" became a math
+    formula and characters like * or _ could turn text bold or italic.
+    A backslash before these characters makes them display literally.
+    """
+    return re.sub(r"([\\`*_$~\[\]<>#|])", r"\\\1", clean_text(value))
+
+
 def extract_first_url(value: object) -> str:
     """Return the first usable URL in a potentially mixed-text cell."""
     text = clean_text(value)
@@ -442,19 +504,36 @@ def classify_affiliation(note: object) -> str:
 
 def classify_program_status(note: object) -> str:
     """
-    Convert the descriptive NJEDA column into three filter values.
+    Convert the descriptive NJEDA column into two filter values.
 
-    - "Partial", "NJ Ignite", and "SIC" are grouped as Yes.
-    - "None" and "Not specified" are grouped as Not specified.
-    - Blank or unexpected values are also treated as Not specified.
+    - Entries beginning with "NJ Ignite" or "SIC" are grouped as Yes.
+    - "Partial" (listed in an NJEDA directory but not approved), "None",
+      "Needs confirmation", blanks, and anything else are Not specified.
     """
     text = clean_text(note)
     lower_text = text.lower()
 
-    if lower_text.startswith(("partial", "nj ignite", "sic")):
+    if lower_text.startswith(("nj ignite", "sic")):
         return "Yes"
 
     return "Not specified"
+
+
+def distance_from_princeton(latitude: float, longitude: float) -> float | None:
+    """Straight-line (great-circle) distance in miles from Princeton."""
+    if pd.isna(latitude) or pd.isna(longitude):
+        return None
+
+    earth_radius_miles = 3958.7613
+    lat_1 = math.radians(PRINCETON_LATITUDE)
+    lat_2 = math.radians(latitude)
+    delta_lat = lat_2 - lat_1
+    delta_lon = math.radians(longitude - PRINCETON_LONGITUDE)
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat_1) * math.cos(lat_2) * math.sin(delta_lon / 2) ** 2
+    )
+    return round(2 * earth_radius_miles * math.asin(math.sqrt(a)), 1)
 
 
 def category_color(category: object) -> list[int]:
@@ -555,9 +634,20 @@ def load_assets(csv_path: str) -> pd.DataFrame:
 
     df["Latitude"] = pd.to_numeric(df["Latitude"], errors="coerce")
     df["Longitude"] = pd.to_numeric(df["Longitude"], errors="coerce")
-    df["Distance (mi)"] = df["Distance from Princeton U (mi)"].map(
-        extract_distance
-    )
+
+    # Calculate distance from coordinates so every entry uses the same
+    # straight-line measure as the 15-mile ring. Fall back to a typed
+    # distance only for rows without coordinates.
+    df["Distance (mi)"] = [
+        distance_from_princeton(lat, lon)
+        for lat, lon in zip(df["Latitude"], df["Longitude"])
+    ]
+    if LEGACY_DISTANCE_COLUMN in df.columns:
+        typed_distance = df[LEGACY_DISTANCE_COLUMN].map(extract_distance)
+        df["Distance (mi)"] = df["Distance (mi)"].fillna(typed_distance)
+    df["Distance (mi)"] = pd.to_numeric(df["Distance (mi)"], errors="coerce")
+
+    df["Status"] = df["Status"].replace("", "Open")
     df["Website URL"] = df["More Info / Website"].map(extract_first_url)
     df["Affiliation Status"] = df[
         "Princeton Affiliation?"
@@ -570,6 +660,7 @@ def load_assets(csv_path: str) -> pd.DataFrame:
         "Category",
         "Organization Name",
         "Address",
+        "Status",
         "Space Type",
         "Published Price",
         "Princeton Affiliation?",
@@ -596,18 +687,110 @@ def load_assets(csv_path: str) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 
 
+def format_distance(value: object) -> str:
+    return f"{value:.1f} miles" if pd.notna(value) else "Not listed"
+
+
+def build_marker_groups(mapped: pd.DataFrame) -> pd.DataFrame:
+    """
+    Combine resources that share a location into one marker.
+
+    Many Princeton core facilities sit in the same building, so separate
+    markers would stack exactly on top of each other and hide all but one.
+    Coordinates are rounded to 4 decimal places (about 10 meters).
+    """
+    mapped = mapped.copy()
+    mapped["lat_key"] = mapped["Latitude"].round(4)
+    mapped["lon_key"] = mapped["Longitude"].round(4)
+
+    markers = []
+    for _, group in mapped.groupby(["lat_key", "lon_key"], sort=False):
+        first = group.iloc[0]
+        all_planned = (group["Status"] == "Planned").all()
+        main_category = group["Category"].mode().iloc[0]
+        color = category_color(main_category) + [130 if all_planned else 255]
+
+        # Streamlit shows tooltip field values as plain text (any HTML tags
+        # would appear literally), so lines are separated with newline
+        # characters. The tooltip style below ("whiteSpace": "pre-line")
+        # turns those newlines into line breaks.
+        if len(group) == 1:
+            title = first["Organization Name"]
+            status = (
+                "Planned (not yet open)"
+                if first["Status"] == "Planned"
+                else first["Status"]
+            )
+            lines = [
+                f"Category: {first['Category']}",
+                f"Status: {status}",
+                f"Address: {first['Address']}",
+                f"Distance: {format_distance(first['Distance (mi)'])}",
+                "CSIT vouchers: "
+                f"{first['CSIT Vouchers Accepted?'] or 'Unknown'}",
+                f"NJEDA recognized: {first['Program Status']}",
+            ]
+        else:
+            title = f"{len(group)} resources at this location"
+            lines = [
+                f"Address: {group['Address'].mode().iloc[0]}",
+                f"Distance: {format_distance(first['Distance (mi)'])}",
+                "",
+            ] + [f"• {name}" for name in group["Organization Name"]]
+        body = "\n".join(lines)
+
+        markers.append(
+            {
+                "latitude": group["Latitude"].mean(),
+                "longitude": group["Longitude"].mean(),
+                "marker_color": color,
+                "radius": 280 + 70 * (len(group) - 1),
+                "tooltip_title": title,
+                "tooltip_body": body,
+            }
+        )
+
+    return pd.DataFrame(markers)
+
+
+def render_legend(filtered_assets: pd.DataFrame) -> None:
+    """Show only the categories present in the current results."""
+    present = set(filtered_assets["Category"])
+    items = [
+        (category, color)
+        for category, color in CATEGORY_COLORS.items()
+        if category in present
+    ]
+    items += [
+        (category, DEFAULT_MARKER_COLOR)
+        for category in sorted(present - set(CATEGORY_COLORS))
+        if category
+    ]
+
+    if not items:
+        return
+
+    spans = "".join(
+        "<span style='white-space:nowrap; margin-right:1.4rem;'>"
+        f"<span style='color:rgb({c[0]}, {c[1]}, {c[2]}); font-size:18px;'>"
+        f"&#9679;</span> {html.escape(category)}</span>"
+        for category, c in items
+    )
+    st.markdown(
+        "<div style='display:flex; flex-wrap:wrap; row-gap:0.3rem; "
+        f"margin-bottom:0.6rem;'>{spans}</div>"
+        "<div style='font-size:0.85rem; color:var(--medium-gray);'>"
+        "Faded markers are planned facilities that are not yet open. "
+        "Larger markers group several resources in the same building."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_map(filtered_assets: pd.DataFrame) -> None:
     """Render a map centered on Princeton University with a 15-mile ring."""
     mapped = filtered_assets.dropna(subset=["Latitude", "Longitude"]).copy()
-
-    if not mapped.empty:
-        mapped["marker_color"] = mapped["Category"].apply(category_color)
-        mapped["maps_url"] = mapped["Address"].apply(google_maps_url)
-        mapped["distance_display"] = mapped["Distance (mi)"].apply(
-            lambda value: f"{value:.1f} miles"
-            if pd.notna(value)
-            else "Not listed"
-        )
+    markers = build_marker_groups(mapped) if not mapped.empty else mapped
 
     circle_coordinates = radius_circle_coordinates(
         center_latitude=PRINCETON_LATITUDE,
@@ -655,7 +838,7 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
         get_radius=375,
         radius_min_pixels=8,
         radius_max_pixels=16,
-        pickable=True,
+        pickable=False,
         stroked=True,
         get_line_color=[255, 255, 255],
         line_width_min_pixels=2,
@@ -666,12 +849,12 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
     if not mapped.empty:
         marker_layer = pdk.Layer(
             "ScatterplotLayer",
-            data=mapped,
-            get_position="[Longitude, Latitude]",
+            data=markers,
+            get_position="[longitude, latitude]",
             get_fill_color="marker_color",
-            get_radius=280,
+            get_radius="radius",
             radius_min_pixels=8,
-            radius_max_pixels=24,
+            radius_max_pixels=28,
             pickable=True,
             stroked=True,
             get_line_color=[255, 255, 255],
@@ -680,20 +863,14 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
         layers.append(marker_layer)
 
     tooltip = {
-        "html": """
-        <b>{Organization Name}</b><br/>
-        <b>Category:</b> {Category}<br/>
-        <b>Address:</b> {Address}<br/>
-        <b>Distance:</b> {distance_display}<br/>
-        <b>CSIT vouchers:</b> {CSIT Vouchers Accepted?}<br/>
-        <b>Program status:</b> {Program Status}<br/><br/>
-        <a href="{maps_url}" target="_blank">Open in Google Maps</a>
-        """,
+        "html": "<b>{tooltip_title}</b><br/>{tooltip_body}",
         "style": {
             "backgroundColor": "#FFFFFF",
             "color": "#1D1D1B",
             "fontSize": "13px",
             "padding": "10px",
+            "maxWidth": "340px",
+            "whiteSpace": "pre-line",
         },
     }
 
@@ -710,7 +887,7 @@ def render_map(filtered_assets: pd.DataFrame) -> None:
         tooltip=tooltip,
     )
 
-    st.pydeck_chart(deck, use_container_width=True, height=650)
+    stretch(st.pydeck_chart, deck, height=650)
 
     if mapped.empty:
         st.info(
@@ -775,6 +952,7 @@ affiliation_options = [
 selected_affiliation = st.sidebar.selectbox(
     "Princeton-Affiliated Resource",
     options=affiliation_options,
+    help=AFFILIATION_HELP,
 )
 
 program_options = [
@@ -785,22 +963,23 @@ program_options = [
 selected_program = st.sidebar.selectbox(
     "NJEDA-Recognized Resource",
     options=program_options,
+    help=NJEDA_HELP,
 )
 
 search_term = st.sidebar.text_input(
     "Keyword search",
-    placeholder="e.g., wet lab, core facility, makerspace",
+    placeholder="e.g., coworking, core facility, makerspace",
+    help="Simple keyword search.",
 )
 
-# This filter is intentionally placed immediately before the existing
-# "Include assets with no listed distance" checkbox and defaults to unchecked.
 limit_to_csit_vouchers = st.sidebar.checkbox(
     "Limit to resources accepting CSIT Vouchers",
     value=False,
+    help=CSIT_HELP,
 )
 
-show_unknown_distance = st.sidebar.checkbox(
-    "Include assets with no listed distance",
+include_planned = st.sidebar.checkbox(
+    "Include planned facilities (not yet open)",
     value=True,
 )
 
@@ -820,16 +999,15 @@ if limit_to_csit_vouchers:
         )
     ]
 
-if show_unknown_distance:
-    filtered = filtered[
-        filtered["Distance (mi)"].isna()
-        | (filtered["Distance (mi)"] <= selected_distance)
-    ]
-else:
-    filtered = filtered[
-        filtered["Distance (mi)"].notna()
-        & (filtered["Distance (mi)"] <= selected_distance)
-    ]
+if not include_planned:
+    filtered = filtered[filtered["Status"] != "Planned"]
+
+# Resources without a single location (such as campus-wide services) have
+# no distance and are always kept.
+filtered = filtered[
+    filtered["Distance (mi)"].isna()
+    | (filtered["Distance (mi)"] <= selected_distance)
+]
 
 if selected_affiliation != "All":
     filtered = filtered[
@@ -839,10 +1017,10 @@ if selected_affiliation != "All":
 if selected_program != "All":
     filtered = filtered[filtered["Program Status"] == selected_program]
 
-if search_term.strip():
+for word in search_term.lower().split():
     filtered = filtered[
         filtered["Search Text"].str.contains(
-            search_term.strip().lower(),
+            word,
             case=False,
             regex=False,
             na=False,
@@ -875,36 +1053,28 @@ with tab_map:
     st.subheader("Innovation resource map")
     st.caption(
         "The map is centered on Princeton University with the "
-        "orange ring marking a 15-mile radius; hover over a facility marker "
-        "for details."
+        "orange ring marking a 15-mile radius. Hover over a marker for "
+        "details; links and contacts are on the Resource detail tab."
     )
 
-    legend_columns = st.columns(len(CATEGORY_COLORS))
-    for column, (category, color) in zip(
-        legend_columns,
-        CATEGORY_COLORS.items(),
-    ):
-        color_css = f"rgb({color[0]}, {color[1]}, {color[2]})"
-        column.markdown(
-            f"<span style='color:{color_css}; font-size:18px;'>●</span> "
-            f"{category}",
-            unsafe_allow_html=True,
-        )
-
+    render_legend(filtered)
     render_map(filtered)
 
     unmapped = filtered[
         filtered["Latitude"].isna() | filtered["Longitude"].isna()
     ]
     if not unmapped.empty:
-        with st.expander(f"{len(unmapped)} record(s) lack map coordinates"):
+        with st.expander(
+            f"{len(unmapped)} resource(s) not shown on the map"
+        ):
             st.write(
-                "Add numeric Latitude and Longitude values to these rows in "
-                "the CSV. No code edit is required."
+                "These resources have no single map location (for example, "
+                "campus-wide services). They still appear in the directory, "
+                "detail, and export tabs."
             )
-            st.dataframe(
+            stretch(
+                st.dataframe,
                 unmapped[["Organization Name", "Address", "Category"]],
-                use_container_width=True,
                 hide_index=True,
             )
 
@@ -914,6 +1084,7 @@ with tab_directory:
     directory_columns = [
         "Category",
         "Organization Name",
+        "Status",
         "Address",
         "Distance (mi)",
         "Space Type",
@@ -924,9 +1095,9 @@ with tab_directory:
         "Website URL",
     ]
 
-    st.dataframe(
+    stretch(
+        st.dataframe,
         filtered[directory_columns],
-        use_container_width=True,
         hide_index=True,
         column_config={
             "Distance (mi)": st.column_config.NumberColumn(
@@ -961,17 +1132,27 @@ with tab_detail:
         left_column, right_column = st.columns([1, 2])
 
         with left_column:
-            st.subheader(asset["Organization Name"])
-            st.write(f"**Category:** {asset['Category']}")
-            st.write(f"**Address:** {asset['Address']}")
+            st.subheader(md(asset["Organization Name"]))
+            st.write(f"**Category:** {md(asset['Category'])}")
+            if asset["Status"] == "Planned":
+                st.warning("Planned facility: not yet open.")
+            st.write(f"**Address:** {md(asset['Address'])}")
 
             if pd.notna(asset["Distance (mi)"]):
                 st.write(
                     "**Distance from Princeton University:** "
-                    f"{asset['Distance (mi)']:.1f} miles"
+                    f"{asset['Distance (mi)']:.1f} miles (straight line)"
                 )
             else:
-                st.write("**Distance from Princeton University:** Not listed")
+                st.write(
+                    "**Distance from Princeton University:** "
+                    "No single location"
+                )
+
+            st.caption(
+                "Last verified: "
+                f"{md(asset['Last Verified']) or 'Not yet recorded'}"
+            )
 
             if asset["Website URL"]:
                 website_url = html.escape(asset["Website URL"], quote=True)
@@ -1006,27 +1187,30 @@ with tab_detail:
 
         with right_column:
             st.markdown("### Space and pricing")
-            st.write(asset["Space Type"] or "Not listed")
+            st.write(md(asset["Space Type"]) or "Not listed")
             st.write(
                 "**Published price (subject to change):** "
-                f"{asset['Published Price'] or 'Not listed'}"
+                f"{md(asset['Published Price']) or 'Not listed'}"
             )
 
             st.markdown("### Princeton University affiliation or discounts")
             st.write(
-                asset["Princeton Affiliation?"] or "Needs review"
+                md(asset["Princeton Affiliation?"]) or "Needs review"
             )
 
             st.markdown("### CSIT vouchers")
             st.write(
-                asset["CSIT Vouchers Accepted?"] or "Unknown — confirm directly"
+                md(asset["CSIT Vouchers Accepted?"])
+                or "Unknown — confirm directly"
             )
 
             st.markdown("### NJEDA recognized")
             st.write(
-                asset[
-                    "Accelerator / Incubator Program & NJEDA Recognition"
-                ]
+                md(
+                    asset[
+                        "Accelerator / Incubator Program & NJEDA Recognition"
+                    ]
+                )
                 or "No notes listed"
             )
 
@@ -1036,10 +1220,10 @@ with tab_export:
     export_columns = [
         "Category",
         "Organization Name",
+        "Status",
         "Address",
         "Latitude",
         "Longitude",
-        "Distance from Princeton U (mi)",
         "Distance (mi)",
         "Space Type",
         "Published Price",
@@ -1050,21 +1234,20 @@ with tab_export:
         "CSIT Vouchers Accepted?",
         "Accelerator / Incubator Program & NJEDA Recognition",
         "Program Status",
+        "Last Verified",
     ]
 
     export_df = filtered[export_columns].copy()
 
-    st.download_button(
+    # "utf-8-sig" adds a marker that tells Excel the file is UTF-8, so
+    # characters such as dashes and accents display correctly.
+    stretch(
+        st.download_button,
         label="Download filtered CSV",
-        data=export_df.to_csv(index=False).encode("utf-8"),
+        data=export_df.to_csv(index=False).encode("utf-8-sig"),
         file_name="princeton_innovation_resources_filtered.csv",
         mime="text/csv",
-        use_container_width=True,
     )
 
     with st.expander("Show filtered raw data"):
-        st.dataframe(
-            export_df,
-            use_container_width=True,
-            hide_index=True,
-        )
+        stretch(st.dataframe, export_df, hide_index=True)
